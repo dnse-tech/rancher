@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	fleetv1alpha1api "github.com/rancher/fleet/pkg/apis/fleet.cattle.io/v1alpha1"
 	"github.com/rancher/lasso/pkg/controller"
@@ -103,6 +104,7 @@ var (
 		apiextensionsv1.AddToScheme,
 		apiregistrationv12.AddToScheme,
 		catalogv1.AddToScheme,
+		extv1api.AddToScheme,
 	}
 	AddToScheme = localSchemeBuilder.AddToScheme
 	Scheme      = runtime.NewScheme()
@@ -171,6 +173,10 @@ type Context struct {
 	api          *apiregistration.Factory
 	crd          *apiextensions.Factory
 	plan         *upgrade.Factory
+
+	// exp API support
+	Ext     extv1.Interface // delayed initialization, see pkg/ext/extension_apiserver.go
+	extLock *sync.Mutex
 
 	started bool
 }
@@ -487,9 +493,36 @@ func NewContext(ctx context.Context, clientConfig clientcmd.ClientConfig, restCo
 		rke:          rke,
 		rbac:         rbac,
 		plan:         plan,
+
+		extLock: &sync.Mutex{},
 	}
 
 	return wContext, nil
+}
+
+// InitExtAPI safely initializes the Ext API component of the context with the
+// provided extension interface. Access to the component is serialized.
+func InitExtAPI(context *Context, ext extv1.Interface) {
+	context.extLock.Lock()
+	defer context.extLock.Unlock()
+	context.Ext = ext
+}
+
+// GetExtAPI safely retrieves the Ext API component of the context. Access to
+// the component is serialized. The function waits until the component is
+// initialized before returning. During the wait InitExtAPI has access.
+func GetExtAPI(context *Context) extv1.Interface {
+	context.extLock.Lock()
+	defer context.extLock.Unlock()
+
+	// wait for initialization, if not yet done
+	for context.Ext == nil {
+		context.extLock.Unlock()
+		time.Sleep(time.Second)
+		context.extLock.Lock()
+	}
+
+	return context.Ext
 }
 
 type noopMCM struct {
