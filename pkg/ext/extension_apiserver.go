@@ -250,8 +250,12 @@ func NewExtensionAPIServer(ctx context.Context, wranglerContext *wrangler.Contex
 		},
 		Authenticator: authenticator,
 		Authorizer: authorizer.AuthorizerFunc(func(ctx context.Context, a authorizer.Attributes) (authorizer.Decision, string, error) {
+			logrus.Infof("ZZZZZ authorize <<%s>>", a.GetUser().GetName())
+
 			if a.GetUser().GetName() == "system:aggregator" {
 				once.Do(func() {
+					logrus.Infof("ZZZZZ signal aggregator ready")
+
 					close(opts.KubeAggregatorReadyChan)
 				})
 			}
@@ -296,11 +300,16 @@ func NewExtensionAPIServer(ctx context.Context, wranglerContext *wrangler.Contex
 	// for the start and then perform the necessary factory action for
 	// ext'ension controllers.
 
+	logrus.Infof("ZZZZZ ext api server post stores - %T %+v", wranglerContext.Ext, wranglerContext.Ext)
+
 	err = clusterauthtoken.RegisterExtIndexers(wranglerContext.Ext)
 	if err != nil {
+		logrus.Infof("ZZZZZ ext api indexer error: %v", err)
+
 		return nil, err
 	}
 
+	logrus.Infof("ZZZZZ ext api server new done")
 
 	return extensionAPIServer, nil
 }

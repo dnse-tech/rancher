@@ -10,6 +10,7 @@ import (
 	ext "github.com/rancher/rancher/pkg/generated/controllers/ext.cattle.io/v1"
 	managementv3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/types/config"
+	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/cache"
 )
@@ -67,6 +68,8 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 // tokens (v3 and ext) to the cluster auth tokens in the remote.
 func registerDeferred(ctx context.Context, cluster *config.UserContext) {
 	ext := cluster.Management.Wrangler.Ext
+
+	logrus.Infof("ZZZZZ register deferred %T %+v", ext, ext)
 
 	tokenInformer := cluster.Management.Management.Tokens("").Controller().Informer()
 	tokenCache := cluster.Management.Wrangler.Mgmt.Token().Cache()

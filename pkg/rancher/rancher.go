@@ -330,21 +330,27 @@ func (r *Rancher) Start(ctx context.Context) error {
 }
 
 func (r *Rancher) ListenAndServe(ctx context.Context) error {
+	logrus.Info("ZZZZZ start main")
+
 	if err := r.Start(ctx); err != nil {
 		return err
 	}
 
+	logrus.Info("ZZZZZ mcm wait")
+
 	r.Wrangler.MultiClusterManager.Wait(ctx)
+
+	logrus.Info("ZZZZZ start aggregation")
 
 	r.startAggregation(ctx)
 	go r.Steve.StartAggregation(ctx)
 
-	logrus.Info("Wainting for imperative api to be ready")
+	logrus.Info("ZZZZZ waiting for imperative api to be ready")
 	select {
 	case <-r.kubeAggregationReadyChan:
-		logrus.Info("Kube-APIServer connected to imperative api")
+		logrus.Info("ZZZZZ Kube-APIServer connected to imperative api")
 	case <-time.After(time.Minute * 2):
-		logrus.Fatal("Kube-APIServer did not contact the rancher imperative api in time")
+		logrus.Fatal("ZZZZ Kube-APIServer did not contact the rancher imperative api in time")
 	}
 
 	if err := tls.ListenAndServe(ctx, r.Wrangler.RESTConfig,
