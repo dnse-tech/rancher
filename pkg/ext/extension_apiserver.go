@@ -296,15 +296,11 @@ func NewExtensionAPIServer(ctx context.Context, wranglerContext *wrangler.Contex
 	// for the start and then perform the necessary factory action for
 	// ext'ension controllers.
 
-	go func() {
-		time.Sleep(3 * time.Second)
+	err = clusterauthtoken.RegisterExtIndexers(wranglerContext.Ext)
+	if err != nil {
+		return nil, err
+	}
 
-		// ext controller setup ...
-		err = clusterauthtoken.RegisterExtIndexers(wranglerContext.Ext)
-		if err != nil {
-			panic(err)
-		}
-	}()
 
 	return extensionAPIServer, nil
 }
