@@ -10,7 +10,6 @@ import (
 	ext "github.com/rancher/rancher/pkg/generated/controllers/ext.cattle.io/v1"
 	managementv3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/types/config"
-	"github.com/rancher/rancher/pkg/wrangler"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/cache"
 )
@@ -60,7 +59,7 @@ func Register(ctx context.Context, cluster *config.UserContext) {
 }
 
 func registerDeferred(ctx context.Context, cluster *config.UserContext) {
-	ext := wrangler.GetExtAPI(cluster.Management.Wrangler)
+	ext := cluster.Management.Wrangler.Ext
 
 	tokenInformer := cluster.Management.Management.Tokens("").Controller().Informer()
 	tokenCache := cluster.Management.Wrangler.Mgmt.Token().Cache()
