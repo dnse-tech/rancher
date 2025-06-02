@@ -45,7 +45,9 @@ func (h *tokenHandler) Create(token *managementv3.Token) (runtime.Object, error)
 	_, err := h.clusterAuthTokenLister.Get(h.namespace, token.Name)
 	if !errors.IsNotFound(err) {
 		return h.Updated(token)
-	} else if features.TokenHashing.Enabled() {
+	}
+
+	if features.TokenHashing.Enabled() {
 		// we can sync tokens which are hashed by copying the hash downstream
 		if token.Annotations[tokens.TokenHashed] != "true" {
 			// re-enqueue until the token has been hashed
@@ -66,8 +68,8 @@ func (h *tokenHandler) Create(token *managementv3.Token) (runtime.Object, error)
 		logrus.Warnf("token [%s] will not be synced or useable for ACE because it uses an older hash version, generate a new token to use ACE", token.Name)
 		// don't re-enqueue, we can't sync this token
 		return nil, generic.ErrSkip
-
 	}
+
 	// token isn't hashed, hash the value only for downstream
 	hasher := hashers.GetHasher()
 	hashedValue, err := hasher.CreateHash(token.Token)
@@ -85,38 +87,36 @@ func (h *tokenHandler) createClusterAuthToken(token *managementv3.Token, hashedV
 	}
 
 	clusterAuthToken := common.NewClusterAuthToken(token)
-	clusterAuthToken.SecretKeyHash = hashedValue
+	clusterAuthTokenSecret := common.NewClusterAuthTokenSecret(token, hashedValue)
 
-	clusterAuthSecret := common.NewClusterAuthTokenSecret(token, hashedValue)
+	// Creating the secret first, then the token for it. This ensures that
+	// kube-api-auth either sees nothing, or a working combination of
+	// resources. In case of trouble the partial set of resources (orphan
+	// secret) is removed.
 
-	// Create the shadow token, and associated secret. Tear both down in case of trouble.
+	clusterAuthTokenSecret, err = h.clusterSecret.Create(clusterAuthTokenSecret)
+	if err != nil && errors.IsAlreadyExists(err) {
+		// Overwrite an existing secret.
+		clusterAuthTokenSecret, err = h.clusterSecret.Update(clusterAuthTokenSecret)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// Now create the shadow token.
 	clusterAuthToken, err = h.clusterAuthToken.Create(clusterAuthToken)
 	if err == nil {
-		clusterAuthSecret.ObjectMeta.OwnerReferences = []metav1.OwnerReference{{
-			Name:       clusterAuthToken.Name,
-			UID:        clusterAuthToken.UID,
-			APIVersion: clusterAuthToken.APIVersion,
-			Kind:       clusterAuthToken.Kind,
-		}}
-
-		_, err = h.clusterSecret.Create(clusterAuthSecret)
-		if err == nil {
-			return nil
-		}
-
-		if errors.IsAlreadyExists(err) {
-			// Overwrite the existing secret.
-			_, err = h.clusterSecret.Update(clusterAuthSecret)
-			if err == nil {
-				return nil
-			}
-		}
-
-		// Avoid leaving partially created resources.
-		if errd := h.clusterAuthToken.Delete(token.Name, &metav1.DeleteOptions{}); errd != nil {
-			logrus.Errorf("failed to delete cluster auth token `%s` after creation failure: %v", token.Name, errd)
-		}
+		return nil
 	}
+
+	// Avoid leaving partially created resources.
+	if err := h.clusterAuthToken.Delete(clusterAuthToken.Name, &metav1.DeleteOptions{}); err != nil {
+		logrus.Errorf("failed to delete cluster auth token `%s` after creation failure: %v",
+			clusterAuthToken.Name, err)
+	}
+
+	// Report creation failure
 	return err
 }
 
@@ -132,7 +132,7 @@ func (h *tokenHandler) Updated(token *managementv3.Token) (runtime.Object, error
 	}
 
 	forced := false
-	clusterAuthSecret, err := h.clusterSecretLister.Get(h.namespace, common.ClusterAuthTokenSecretName(token.Name))
+	clusterAuthTokenSecret, err := h.clusterSecretLister.Get(h.namespace, common.ClusterAuthTokenSecretName(token.Name))
 	if err != nil {
 		// While the cluster auth token exists, the associated secret is
 		// missing. Make it now, and force an update later.
@@ -146,10 +146,9 @@ func (h *tokenHandler) Updated(token *managementv3.Token) (runtime.Object, error
 				return nil, fmt.Errorf("unable to hash value for token [%s]: %w", token.Name, err)
 			}
 			hashedValue = hashed
-			clusterAuthToken.SecretKeyHash = hashedValue
 		}
 
-		clusterAuthSecret = common.NewClusterAuthTokenSecret(token, hashedValue)
+		clusterAuthTokenSecret = common.NewClusterAuthTokenSecret(token, hashedValue)
 	}
 
 	err = h.updateClusterUserAttribute(token)
@@ -184,12 +183,12 @@ func (h *tokenHandler) Updated(token *managementv3.Token) (runtime.Object, error
 		if hashVersion == hashers.SHA3Version {
 			// trigger the compare to compare the values of the tokens
 			current.value = token.Token
-			old.value = common.ClusterAuthTokenSecretValue(clusterAuthSecret)
+			old.value = common.ClusterAuthTokenSecretValue(clusterAuthTokenSecret)
 		}
 	}
 
 	if forced {
-		current.value = common.ClusterAuthTokenSecretValue(clusterAuthSecret)
+		current.value = common.ClusterAuthTokenSecretValue(clusterAuthTokenSecret)
 	}
 
 	if !forced && reflect.DeepEqual(current, old) {
@@ -198,10 +197,10 @@ func (h *tokenHandler) Updated(token *managementv3.Token) (runtime.Object, error
 
 	// If we were comparing token values, then the token was hashed, so we can update the value in the downstream.
 	if current.value != "" {
-		clusterAuthSecret.Data["hash"] = []byte(current.value)
-		_, err = h.clusterSecret.Update(clusterAuthSecret)
+		clusterAuthTokenSecret.Data["hash"] = []byte(current.value)
+		_, err = h.clusterSecret.Update(clusterAuthTokenSecret)
 		if errors.IsNotFound(err) {
-			_, err = h.clusterSecret.Create(clusterAuthSecret)
+			_, err = h.clusterSecret.Create(clusterAuthTokenSecret)
 		}
 	}
 

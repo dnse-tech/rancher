@@ -32,9 +32,16 @@ func NewClusterAuthToken(token *managementv3.Token) *clusterv3.ClusterAuthToken 
 // The cluster auth token is managed separately.
 // Does not create the secret in the remote cluster.
 func NewClusterAuthTokenSecret(token *managementv3.Token, hashedValue string) *corev1.Secret {
+	return NewClusterAuthTokenSecretForName(token.ObjectMeta.Name, hashedValue)
+}
+
+// NewClusterAuthSecret creates a new secret from the given token and its hash value
+// The cluster auth token is managed separately.
+// Does not create the secret in the remote cluster.
+func NewClusterAuthTokenSecretForName(name, hashedValue string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: ClusterAuthTokenSecretName(token.ObjectMeta.Name),
+			Name: ClusterAuthTokenSecretName(name),
 		},
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: corev1.SchemeGroupVersion.Version,
@@ -58,30 +65,41 @@ func ClusterAuthTokenSecretValue(clusterAuthSecret *corev1.Secret) string {
 }
 
 // VerifyClusterAuthToken verifies that a provided secret key is valid for the
-// given clusterAuthToken and hashed value.
-func VerifyClusterAuthToken(secretKey string, clusterAuthToken *clusterv3.ClusterAuthToken, clusterAuthSecret *corev1.Secret) error {
+// given clusterAuthToken and hashed value. Also determines if the hashed value
+// requires migration from cluster auth token to cluster auth token secret.
+func VerifyClusterAuthToken(secretKey string, clusterAuthToken *clusterv3.ClusterAuthToken, clusterAuthTokenSecret *corev1.Secret) (error, bool) {
 	if !clusterAuthToken.Enabled {
-		return fmt.Errorf("token is not enabled")
+		return fmt.Errorf("token is not enabled"), false
 	}
 
 	expiresAt := clusterAuthToken.ExpiresAt
 	if expiresAt != "" {
 		expires, err := time.Parse(time.RFC3339, expiresAt)
 		if err != nil {
-			return err
+			return err, false
 		}
 		if expires.Before(time.Now()) {
-			return fmt.Errorf("auth expired at %s", expiresAt)
+			return fmt.Errorf("auth expired at %s", expiresAt), false
 		}
 	}
 
 	hashedValue := clusterAuthToken.SecretKeyHash
-	if clusterAuthSecret != nil {
-		hashedValue = ClusterAuthTokenSecretValue(clusterAuthSecret)
+	migrate := true
+
+	if hashedValue == "" {
+		if clusterAuthTokenSecret == nil {
+			return fmt.Errorf("hash secret is missing"), false
+		}
+
+		hashedValue = ClusterAuthTokenSecretValue(clusterAuthTokenSecret)
+		migrate = false
 	}
+
 	hasher, err := hashers.GetHasherForHash(hashedValue)
 	if err != nil {
-		return fmt.Errorf("unable to get hasher for clusterAuthToken %s/%s, err: %w", clusterAuthToken.Name, clusterAuthToken.Namespace, err)
+		return fmt.Errorf("unable to get hasher for clusterAuthToken %s/%s, err: %w",
+			clusterAuthToken.Name, clusterAuthToken.Namespace, err), false
 	}
-	return hasher.VerifyHash(hashedValue, secretKey)
+
+	return hasher.VerifyHash(hashedValue, secretKey), migrate
 }
