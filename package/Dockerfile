@@ -1,4 +1,5 @@
-ARG ARCH=amd64
+ARG ARCH=s390x
+ARG BUILDPLATFORM=linux/${ARCH}
 
 ARG CHART_DEFAULT_BRANCH=dev-v2.12
 ARG PARTNER_CHART_DEFAULT_BRANCH=main
@@ -133,8 +134,8 @@ ARG CATTLE_KDM_BRANCH
 ENV CATTLE_CHART_DEFAULT_BRANCH=$CHART_DEFAULT_BRANCH
 ENV CATTLE_PARTNER_CHART_DEFAULT_BRANCH=$PARTNER_CHART_DEFAULT_BRANCH
 ENV CATTLE_RKE2_CHART_DEFAULT_BRANCH=$RKE2_CHART_DEFAULT_BRANCH
-ENV CATTLE_MACHINE_VERSION v0.15.0-rancher128
-ENV CATTLE_K3S_VERSION v1.32.1+k3s1
+ENV CATTLE_MACHINE_VERSION v0.15.0-rancher106
+ENV CATTLE_K3S_VERSION v1.27.8+k3s1
 ENV CATTLE_MACHINE_PROVISION_IMAGE rancher/machine:${CATTLE_MACHINE_VERSION}
 ENV CATTLE_ETCD_VERSION v3.5.16
 ENV DOCKER_MACHINE_LINODE_VERSION v0.1.15
@@ -184,22 +185,21 @@ COPY --from=partner-charts /var/lib/rancher-data/local-catalogs/v2/rancher-partn
 COPY --from=rke2-charts /var/lib/rancher-data/local-catalogs/v2/rancher-rke2-charts/675f1b63a0a83905972dcab2794479ed599a6f41b86cd6193d69472d0fa889c9 /var/lib/rancher-data/local-catalogs/v2/rancher-rke2-charts/675f1b63a0a83905972dcab2794479ed599a6f41b86cd6193d69472d0fa889c9
 
 RUN curl -sLf https://github.com/rancher/machine/releases/download/${CATTLE_MACHINE_VERSION}/rancher-machine-${ARCH}.tar.gz | tar xvzf - -C /usr/bin && \
-    chown root:root /usr/bin/rancher-machine && \
-    curl -LO https://github.com/linode/docker-machine-driver-linode/releases/download/${DOCKER_MACHINE_LINODE_VERSION}/docker-machine-driver-linode_linux-${ARCH}.zip && \
-    unzip docker-machine-driver-linode_linux-${ARCH}.zip -d /opt/drivers/management-state/bin && \
-    mkdir -p /usr/share/rancher/ui/assets/ && \
-    ln -s /opt/drivers/management-state/bin/docker-machine-driver-linode /usr/share/rancher/ui/assets/ && \
-    rm docker-machine-driver-linode_linux-${ARCH}.zip
+    chown root:root /usr/bin/rancher-machine
 
-RUN curl -LO https://github.com/harvester/docker-machine-driver-harvester/releases/download/${DOCKER_MACHINE_HARVESTER_VERSION}/docker-machine-driver-harvester-${ARCH}.tar.gz && \
-    tar -xf docker-machine-driver-harvester-${ARCH}.tar.gz -C /opt/drivers/management-state/bin && \
-    ln -s /opt/drivers/management-state/bin/docker-machine-driver-harvester /usr/share/rancher/ui/assets/ && \
-    rm docker-machine-driver-harvester-${ARCH}.tar.gz
+# docker-machine-driver-linode is not available for s390x, so we skip the download for that architecture and provides an already built binary.
+COPY docker-machine-driver-linode /opt/drivers/management-state/bin/docker-machine-driver-linode
+RUN  mkdir -p /usr/share/rancher/ui/assets/ && \
+ln -s /opt/drivers/management-state/bin/docker-machine-driver-linode /usr/share/rancher/ui/assets/
+
+# docker-machine-driver-harvester is not available for s390x, so we skip the download for that architecture and provides an already built binary.
+COPY docker-machine-driver-harvester-s390x /opt/drivers/management-state/bin/docker-machine-driver-harvester
+RUN ln -s /opt/drivers/management-state/bin/docker-machine-driver-harvester /usr/share/rancher/ui/assets/
 
 ENV ETCD_URL=https://github.com/etcd-io/etcd/releases/download/${CATTLE_ETCD_VERSION}/etcd-${CATTLE_ETCD_VERSION}-linux-${ARCH}.tar.gz
 
 # Set up K3s: copy the necessary binaries from the K3s image.
-COPY --from=rancher/k3s:v1.32.1-k3s1 \
+COPY --from=rancher/k3s:v1.27.8-k3s1 \
     /bin/blkid \
     /bin/bandwidth \
     /bin/cni \
@@ -299,17 +299,18 @@ ENV SSL_CERT_DIR /etc/rancher/ssl
 ENV ETCD_UNSUPPORTED_ARCH ${ETCD_UNSUPPORTED_ARCH}
 
 
-# Enable exporting of the k3s images as part of the build process.
-FROM --platform=$BUILDPLATFORM go-builder AS images
-WORKDIR /src
-ENV CGO_ENABLED=1
-ENV CATTLE_K3S_VERSION v1.32.1+k3s1
-RUN zypper -n install libbtrfs-devel libgpgme-devel
-COPY hack/airgap/go.mod hack/airgap/go.sum /src/
-RUN --mount=type=cache,target=/root/.cache,id=rancher go mod download
-COPY hack/airgap/ /src/
-RUN --mount=type=cache,target=/root/.cache,id=rancher go build -tags k3s_export -o export-images ./...
-RUN ./export-images -k3s-version ${CATTLE_K3S_VERSION} -output /src/k3s-airgap-images.tar
+# REMOVE THIS STAGE IF YOU DO NOT NEED TO EXPORT K3S IMAGES
+# # Enable exporting of the k3s images as part of the build process.
+# FROM --platform=$BUILDPLATFORM go-builder AS images
+# WORKDIR /src
+# ENV CGO_ENABLED=1
+# ENV CATTLE_K3S_VERSION v1.27.8+k3s1
+# RUN zypper -n install libbtrfs-devel libgpgme-devel
+# COPY hack/airgap/go.mod hack/airgap/go.sum /src/
+# RUN --mount=type=cache,target=/root/.cache,id=rancher go mod download
+# COPY hack/airgap/ /src/
+# RUN --mount=type=cache,target=/root/.cache,id=rancher go build -tags k3s_export -o export-images ./...
+# RUN ./export-images -k3s-version ${CATTLE_K3S_VERSION} -output /src/k3s-airgap-images.tar
 
 
 # rancher-go-builder is an intermediate stage with go mod ready and Rancher
@@ -369,8 +370,10 @@ ENV CATTLE_SERVER_IMAGE ${IMAGE_REPO}/rancher
 
 COPY --chown=root:root --chmod=0755 \
     --from=server-build /app/rancher /usr/bin/
-COPY --chown=root:root --chmod=0755 \
-    --from=images /src/k3s-airgap-images.tar /var/lib/rancher/k3s/agent/images/
+# Copy the k3s images tar file if it was built in the previous stage.
+# Uncomment the following lines if you want to include the k3s images tar file in the final image.
+# COPY --chown=root:root --chmod=0755 \
+#     --from=images /src/k3s-airgap-images.tar /var/lib/rancher/k3s/agent/images/
 COPY --chown=root:root --chmod=0755 \
     package/loglevel \
     package/entrypoint.sh \
